@@ -7,30 +7,22 @@
 
 ## 云构建方案是什么
 
-在 Codemagic 的 **Mac mini M4（10 核 CPU / 16GB 内存）** 构建机上自动完成全部编译：
+在 Codemagic 的 **Mac mini** 构建机上自动完成全部编译：
 
 | 项 | 配置 |
 |---|---|
-| 构建机 | Mac mini M4，10 核 CPU / 16GB 内存（与官方推荐配置一致） |
+| 构建机 | **Mac mini M2（8 核 CPU / 16GB 内存）**，当前账号可直接调度；开通按量计费后可改 M4（10 核）提速 |
 | 系统镜像 | macOS 26.5 + 完整 Xcode 26.5（Metal 工具链，启动着色器可编入 App） |
-| 磁盘 | 294GB 总量 / 约 144GB 可用（构建约需 45–60GB） |
+| 磁盘 | 约 144GB 可用（构建约需 45–60GB） |
 | 时长上限 | 120 分钟 |
-| 费用 | M4 $0.114/分钟；一次完整构建约 40–90 分钟（≈ $5–10）。免费档每月 500 分钟仅限 M2 机型 |
+| 费用 | M4 $0.114/分钟；M2 按量计费约 $0.055/分钟；免费档每月 500 分钟仅限 M2。一次完整构建约 40–90 分钟 |
 
-**当前进度**：Codemagic 应用 `totk-macnative-build`（ID `6ad724763e412ecb7e907cb5`）和变量组 `totk_secrets` 已创建；GitHub 仓库待创建（见下方「唯一待办」）。
-
-**仓库可见性**：当前 Codemagic 应用以「手动添加（generic）」方式接入。
-- 仓库设为**公开** → 直接可用，零额外配置（本仓库只有流水线配置，无任何敏感内容）
-- 仓库设为**私有** → 需在 Codemagic UI 用 GitHub 集成重新添加该仓库（Add application → GitHub → 选择 `totk-macnative-build`），或为仓库配置 Codemagic 的 deploy key
-
-## 唯一待办（30 秒）
-
-在 GitHub 网页创建仓库：https://github.com/new
-- Repository name: `totk-macnative-build`
-- **Public**（推荐，零配置）或 Private（见上文可见性说明）
-- **不要**勾选 "Add a README"（保持空仓库，配置文件由流水线推送）
-
-创建后告知，随后自动完成：推送 `codemagic.yaml` + README → 触发一次验证构建。
+**当前进度**：
+- ✅ GitHub 仓库已创建：https://github.com/1392819747/totk-macnative-build （公开，仅流水线配置，无任何敏感内容）
+- ✅ Codemagic 应用 `totk-macnative-build`（ID `6ad724763e412ecb7e907cb5`）已关联仓库，workflow 识别正常
+- ✅ 变量组 `totk_secrets` 已创建（ID `6ad7255b7550aed810906c55`），`GAME_EXT=nsp` 已预填
+- ✅ **验证构建已通过**（2026-10-20，build `6ad73c3b7550aed81090737d`）：机器调度 → 仓库检出 → 预检 → 依赖安装（brew opus/libvpx/python@3.14 + Xcode Metal）→ 后续步骤按验证模式跳过 → finished
+- ⏳ 待办：配置游戏直链环境变量（见「第 3 步」）后即可触发正式构建
 
 ## 一次性准备
 
@@ -84,14 +76,15 @@
 ### 第 4 步：启动构建
 
 - **UI**：应用页 → `Start new build` → 分支 `main` → 工作流 `TOTK macOS Build (MacNativeGames)`
-- **API**（仓库就绪后）：
+- **API**：
   ```sh
   curl -X POST "https://codemagic.io/api/v3/apps/6ad724763e412ecb7e907cb5/builds" \
     -H "x-auth-token: <你的 Codemagic API token>" -H "Content-Type: application/json" \
-    -d '{"workflow_id":"totk-mac-build","branch":"main","instance_type":"mac_mini_m4"}'
+    -d '{"workflow_id":"totk-mac-build","branch":"main"}'
   ```
+  默认用 codemagic.yaml 里的 `mac_mini_m2`；开通计费后可在 body 加 `"instance_type":"mac_mini_m4"` 提速。
 
-未配置直链时构建会自动跳过（退出码 0），可用来先验证流水线本身是否通畅。
+未配置直链时构建会进入「验证模式」：预检通过、后续步骤全部跳过、构建成功，可用来先验证流水线本身是否通畅。
 
 ### 第 5 步：取回成品
 
@@ -102,10 +95,10 @@
 
 ## 流水线做了什么（codemagic.yaml）
 
-1. **预检**：缺少 `GAME_URL`/`KEYS_URL` 时安全退出（验证模式）
+1. **预检**：缺少 `GAME_URL`/`KEYS_URL` 时进入验证模式，后续步骤全部跳过
 2. **装依赖**：`brew install opus libvpx python@3.14`；尝试下载 Metal 工具链（失败则退回本机 Metal 缓存方案）
 3. **下载**：游戏文件 + `prod.keys`（+ 更新包/固件）到构建机临时目录
-4. **构建**：`git clone` 上游仓库 → `python3.14 build_app.py` → 输出到 `/tmp/totk-out`
+4. **构建**：`git clone` 上游仓库 → `build_app.py` → 输出到 `/tmp/totk-out`
 5. **打包上传**：`tar` 打包 → 有 COS 变量则上传 COS，否则只发布 Codemagic 制品 → 邮件通知
 
 ## 排障
