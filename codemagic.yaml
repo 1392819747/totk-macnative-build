@@ -9,7 +9,8 @@
 workflows:
   totk-mac-build:
     name: TOTK macOS Build (MacNativeGames)
-    instance_type: mac_mini_m4          # 10 核 M4 / 16GB（需账号开通按量计费）
+    instance_type: mac_mini_m2          # 8 核 M2 / 16GB（当前账号可直接调度；
+                                        # 开通按量计费后可改 mac_mini_m4 提速）
     max_build_duration: 120             # 分钟，平台上限
     environment:
       groups:
@@ -36,11 +37,28 @@ workflows:
       - name: 安装构建依赖
         script: |
           set -e
+          # Apple Silicon 上确保 brew 在 PATH 中
+          if [ -x /opt/homebrew/bin/brew ]; then
+            eval "$(/opt/homebrew/bin/brew shellenv)"
+          fi
           export HOMEBREW_NO_AUTO_UPDATE=1
+          echo "== PATH: $PATH"
+          echo "== brew: $(command -v brew || echo 'not found')"
+          # Python 3.14：优先 brew 版，缺失时回退系统 python3（并给出提示）
           for pkg in opus libvpx python@3.14; do
-            brew list --versions "$pkg" >/dev/null 2>&1 || brew install "$pkg"
+            brew list --versions "$pkg" >/dev/null 2>&1 || brew install "$pkg" || echo "WARN: brew install $pkg 失败，继续"
           done
-          python3.14 --version
+          if brew --prefix python@3.14 >/dev/null 2>&1; then
+            export PATH="$(brew --prefix python@3.14)/bin:$PATH"
+          fi
+          if command -v python3.14 >/dev/null 2>&1; then
+            PY=python3.14
+          else
+            echo "WARN: 未找到 python3.14，回退 python3（$(python3 --version 2>&1)）"
+            PY=python3
+          fi
+          $PY --version
+          echo "TOTK_PY=$PY" > /tmp/totk_py.env
           xcodebuild -version || true
           # 完整 Xcode 26.5 通常已内置 Metal 工具链；下载失败不影响构建，
           # 只是启动着色器改存本机 Metal 缓存（首次启动多等几分钟）。
@@ -89,7 +107,8 @@ workflows:
             ARGS="$ARGS --firmware ../totk/firmware"
           fi
           mkdir -p /tmp/totk-out
-          python3.14 build_app.py $ARGS -o "/tmp/totk-out/Tears of the Kingdom.app"
+          . /tmp/totk_py.env 2>/dev/null || true
+          "${TOTK_PY:-python3}" build_app.py $ARGS -o "/tmp/totk-out/Tears of the Kingdom.app"
           echo "== 成品 =="
           du -sh "/tmp/totk-out/Tears of the Kingdom.app"
 
