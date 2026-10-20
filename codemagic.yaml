@@ -23,7 +23,9 @@ workflows:
       # ---------- 0. 预检：未配置直链时安全退出，用于验证流水线本身 ----------
       - name: 预检（流水线验证模式）
         script: |
+          rm -f /tmp/totk_validation_mode
           if [ -z "${GAME_URL}" ] || [ -z "${KEYS_URL}" ]; then
+            touch /tmp/totk_validation_mode
             echo "尚未配置 GAME_URL / KEYS_URL，本次构建跳过（仅验证流水线可用）。"
             echo "配置方法见仓库 README.md。"
             exit 0
@@ -71,6 +73,7 @@ workflows:
       # ---------- 2. 下载游戏文件与密钥（仅存于构建机） ----------
       - name: 下载游戏文件与密钥
         script: |
+          if [ -f /tmp/totk_validation_mode ]; then echo "验证模式：本步骤跳过"; exit 0; fi
           set -e
           mkdir -p totk && cd totk
           curl -fL --retry 3 --retry-delay 5 -o "game.${GAME_EXT}" "${GAME_URL}"
@@ -91,6 +94,7 @@ workflows:
       # ---------- 3. 克隆 MacNativeGames 并执行构建 ----------
       - name: 构建 TOTK App
         script: |
+          if [ -f /tmp/totk_validation_mode ]; then echo "验证模式：本步骤跳过"; exit 0; fi
           set -e
           git clone --depth 1 https://github.com/ly05010419/MacNativeGames.git
           cd MacNativeGames
@@ -115,6 +119,7 @@ workflows:
       # ---------- 4. 打包成品 ----------
       - name: 打包成品
         script: |
+          if [ -f /tmp/totk_validation_mode ]; then echo "验证模式：本步骤跳过"; exit 0; fi
           set -e
           cd /tmp/totk-out
           tar -cf "Tears of the Kingdom.tar" "Tears of the Kingdom.app"
@@ -123,6 +128,7 @@ workflows:
       # ---------- 5. 上传腾讯云 COS（配置了 COS 变量才执行） ----------
       - name: 上传成品到腾讯云 COS
         script: |
+          if [ -f /tmp/totk_validation_mode ]; then echo "验证模式：本步骤跳过"; exit 0; fi
           if [ -n "${COS_SECRET_ID}" ] && [ -n "${COS_SECRET_KEY}" ] && [ -n "${COS_BUCKET}" ]; then
             pip3 install --quiet coscmd
             coscmd config -a "${COS_SECRET_ID}" -s "${COS_SECRET_KEY}" \
