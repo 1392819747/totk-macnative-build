@@ -1,0 +1,126 @@
+# 《塞尔达传说 王国之泪》Mac 原生版 — Codemagic 云构建流水线
+# 项目：https://github.com/ly05010419/MacNativeGames
+#
+# 本文件不含任何游戏数据、密钥。游戏文件与 prod.keys 通过 Codemagic
+# 环境变量（totk_secrets 组，Secret）提供的直链在构建机内临时下载，
+# 构建结束即随构建机销毁。
+#
+# 环境变量配置方法见同仓库 README.md。
+workflows:
+  totk-mac-build:
+    name: TOTK macOS Build (MacNativeGames)
+    instance_type: mac_mini_m4          # 10 核 M4 / 16GB（需账号开通按量计费）
+    max_build_duration: 120             # 分钟，平台上限
+    environment:
+      groups:
+        - totk_secrets                  # 对应 Codemagic 应用里同名的变量组
+      vars:
+        # 非敏感默认值（可在 Codemagic UI 覆盖）
+        GAME_EXT: xci                   # 本体格式：xci 或 nsp
+        UPDATE_EXT: nsp                 # 更新包格式：nsp 或 nsz
+    scripts:
+      # ---------- 0. 预检：未配置直链时安全退出，用于验证流水线本身 ----------
+      - name: 预检（流水线验证模式）
+        script: |
+          if [ -z "${GAME_URL}" ] || [ -z "${KEYS_URL}" ]; then
+            echo "尚未配置 GAME_URL / KEYS_URL，本次构建跳过（仅验证流水线可用）。"
+            echo "配置方法见仓库 README.md。"
+            exit 0
+          fi
+          echo "== 构建机环境 =="
+          sw_vers
+          sysctl -n hw.memsize
+          df -h . | tail -1
+
+      # ---------- 1. 安装构建依赖 ----------
+      - name: 安装构建依赖
+        script: |
+          set -e
+          export HOMEBREW_NO_AUTO_UPDATE=1
+          for pkg in opus libvpx python@3.14; do
+            brew list --versions "$pkg" >/dev/null 2>&1 || brew install "$pkg"
+          done
+          python3.14 --version
+          xcodebuild -version || true
+          # 完整 Xcode 26.5 通常已内置 Metal 工具链；下载失败不影响构建，
+          # 只是启动着色器改存本机 Metal 缓存（首次启动多等几分钟）。
+          if xcodebuild -downloadComponent MetalToolchain >/dev/null 2>&1; then
+            echo "Metal 工具链就绪：启动着色器将编入 App"
+          else
+            echo "Metal 工具链无需下载或下载失败，使用内置 Metal 支持"
+          fi
+
+      # ---------- 2. 下载游戏文件与密钥（仅存于构建机） ----------
+      - name: 下载游戏文件与密钥
+        script: |
+          set -e
+          mkdir -p totk && cd totk
+          curl -fL --retry 3 --retry-delay 5 -o "game.${GAME_EXT}" "${GAME_URL}"
+          curl -fL --retry 3 --retry-delay 5 -o prod.keys "${KEYS_URL}"
+          if [ -n "${UPDATE_URL}" ]; then
+            curl -fL --retry 3 -o "update.${UPDATE_EXT}" "${UPDATE_URL}"
+          fi
+          # 共享字体二选一：SHARED_FONTS_URL（预提取的六个 .bfttf，约 12MB，首选）
+          # 或 FIRMWARE_URL（325MB 固件目录 tar.gz，构建机现提取）
+          if [ -n "${SHARED_FONTS_URL}" ]; then
+            curl -fL --retry 3 -o shared-fonts.zip "${SHARED_FONTS_URL}"
+          elif [ -n "${FIRMWARE_URL}" ]; then
+            curl -fL --retry 3 -o firmware.tar.gz "${FIRMWARE_URL}"
+          fi
+          ls -lh
+          echo "提示：prod.keys 与游戏文件只存在于本构建机，构建结束后随机器销毁。"
+
+      # ---------- 3. 克隆 MacNativeGames 并执行构建 ----------
+      - name: 构建 TOTK App
+        script: |
+          set -e
+          git clone --depth 1 https://github.com/ly05010419/MacNativeGames.git
+          cd MacNativeGames
+          ARGS="../totk/game.${GAME_EXT} -k ../totk/prod.keys"
+          if [ -n "${UPDATE_URL}" ]; then
+            ARGS="$ARGS --update ../totk/update.${UPDATE_EXT}"
+          fi
+          if [ -n "${SHARED_FONTS_URL}" ]; then
+            mkdir -p ../totk/shared-fonts
+            (cd ../totk/shared-fonts && unzip -q -o ../shared-fonts.zip)
+            ARGS="$ARGS --shared-fonts ../totk/shared-fonts"
+          elif [ -n "${FIRMWARE_URL}" ]; then
+            (cd ../totk && tar xzf firmware.tar.gz)
+            ARGS="$ARGS --firmware ../totk/firmware"
+          fi
+          mkdir -p /tmp/totk-out
+          python3.14 build_app.py $ARGS -o "/tmp/totk-out/Tears of the Kingdom.app"
+          echo "== 成品 =="
+          du -sh "/tmp/totk-out/Tears of the Kingdom.app"
+
+      # ---------- 4. 打包成品 ----------
+      - name: 打包成品
+        script: |
+          set -e
+          cd /tmp/totk-out
+          tar -cf "Tears of the Kingdom.tar" "Tears of the Kingdom.app"
+          ls -lh
+
+      # ---------- 5. 上传腾讯云 COS（配置了 COS 变量才执行） ----------
+      - name: 上传成品到腾讯云 COS
+        script: |
+          if [ -n "${COS_SECRET_ID}" ] && [ -n "${COS_SECRET_KEY}" ] && [ -n "${COS_BUCKET}" ]; then
+            pip3 install --quiet coscmd
+            coscmd config -a "${COS_SECRET_ID}" -s "${COS_SECRET_KEY}" \
+                          -b "${COS_BUCKET}" -r "${COS_REGION:-ap-guangzhou}"
+            cd /tmp/totk-out
+            coscmd upload "Tears of the Kingdom.tar" "totk/"
+            echo "已上传：COS ${COS_BUCKET}/totk/Tears of the Kingdom.tar"
+          else
+            echo "未配置 COS_SECRET_ID/COS_SECRET_KEY/COS_BUCKET，跳过 COS 上传。"
+            echo "请从本构建页的 Artifacts 下载 Tears of the Kingdom.tar"
+          fi
+
+    # ---------- 制品：也可直接在构建页下载 ----------
+    artifacts:
+      - /tmp/totk-out/Tears of the Kingdom.tar
+
+    publishing:
+      email:
+        recipients:
+          - 1392819747@qq.com
